@@ -1,0 +1,296 @@
+#ifdef ARDUINO
+#include <Arduino.h>
+#include <unity.h>
+#else
+#define UNITY_BEGIN()
+#define UNITY_END()
+#define RUN_TEST(x) x();
+#endif
+#include <iostream>
+#include <string>
+#include <chrono>
+#ifdef ARDUINO
+#include "esp_event_broker.h"
+#define TestQueue ESPCirQueue
+#define TestBroker ESPEventBroker 
+#define DELAY(x) vTaskDelay(pdMS_TO_TICKS(x));
+#define TIME_MILLIS() millis()
+#else
+#include "event_broker.h"
+#define TestQueue CirQueue
+#define TestBroker EventBroker
+#define DELAY(x) std::this_thread::sleep_for(std::chrono::milliseconds(x));
+#define TIME_MILLIS() std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()
+#endif
+
+#define UART_RATE 115200
+#define QUEUE_SIZE 512
+#define BATCH_SIZE 10
+
+const int repeat = 100000;
+const int timeout = 10;
+
+template <typename T>
+class Logger
+{
+public:
+    Logger(bool log = false) : log(log){}
+
+    void consume(T& input)
+    {
+        if(log) {
+            std::cout << input << " : ";
+        }
+    }
+
+    void flush() {
+        if(log) {
+            std::cout << std::endl;
+        }
+    }
+
+private:
+    bool log;
+};
+
+//------------------------------------------------------------------------------
+// Timer Event
+
+//------------------------------------------------------------------------------
+// Timer event class definition
+class TimerEvent : public Event
+{
+public:
+    enum {
+        SECONDS = Event::FIRST,
+        MILLISECONDS,
+        LAST
+    };
+    TimerEvent(unsigned id = 0):Event(id){}
+
+    void set_timestamp() {
+        this->timestamp = TIME_MILLIS();
+    }
+
+    unsigned long get_timestamp() const {return timestamp;}
+
+private:
+    unsigned long timestamp;
+};
+
+//------------------------------------------------------------------------------
+class ActiveSubscriber : public TestBroker<TimerEvent>::Subscriber
+{
+public:
+    virtual bool receive(const TimerEvent& event){
+        //std::cout << "." << std::flush;
+        return true;
+    }
+};
+
+//------------------------------------------------------------------------------
+class PassiveSubscriber : public TestBroker<TimerEvent>::Subscriber
+{
+public:
+
+virtual bool receive(const TimerEvent& event){
+        if(event.get_id() == TimerEvent::MILLISECONDS){
+            if(first_event) {
+                first_event = false;
+                first_ts = event.get_timestamp();
+            } else {
+                last_ts = event.get_timestamp();
+            }
+        }
+        return true;
+    }
+    unsigned long get_start_time() const {return first_ts;}
+    unsigned long get_finish_time() const {return last_ts;}
+
+private:
+    bool first_event = true;
+    unsigned long first_ts;
+    unsigned long last_ts;
+};
+
+//------------------------------------------------------------------------------
+// Timer event broker
+class TimerEventBroker: public TestBroker<TimerEvent> 
+{
+public:
+    TimerEventBroker():TestBroker<TimerEvent>(128, TimerEvent::LAST){}
+    ~TimerEventBroker() {}
+    size_t get_max_queue() const {return max_queue;}
+    virtual void begin() override;
+    virtual void send() override;
+private:
+    size_t max_queue = 0;
+};
+
+void TimerEventBroker::begin()
+{
+    EventBroker::begin();
+}
+
+void TimerEventBroker::send()
+{
+    // If the queue is full, yield for a longer window to let the consumer process stdout dots
+    if (is_full()) {
+        DELAY(10)
+        return;
+    }
+
+    static unsigned count = 0;
+    static unsigned timestamp = 0;
+    
+    DELAY(1);
+    
+    timestamp++;
+    count++;
+    
+    // Process millisecond event
+    TimerEvent* e1 = allocate();
+    if (e1) {
+        e1->id = TimerEvent::MILLISECONDS;
+        e1->set_timestamp();
+        push_tail();
+        max_queue = std::max(max_queue, get_length());
+    }
+
+    // Process second event separately 
+    if(count == 1000) {
+        count = 0;
+        TimerEvent* e2 = allocate();
+        if (e2) {
+            e2->id = TimerEvent::SECONDS;
+            e2->set_timestamp();
+            push_tail();
+        }
+    }
+}
+
+//------------------------------------------------------------------------------
+// Timer Event Test
+void test_timer_events()
+{
+    TimerEventBroker* broker = new TimerEventBroker();
+    ActiveSubscriber active_subscriber;
+    PassiveSubscriber passive_subscriber;
+    broker->publish(TimerEvent::SECONDS);
+    broker->publish(TimerEvent::MILLISECONDS);
+    broker->subscribe(TimerEvent::SECONDS, &active_subscriber);
+    broker->subscribe(TimerEvent::SECONDS, &passive_subscriber);
+    broker->subscribe(TimerEvent::MILLISECONDS, &passive_subscriber);
+    broker->begin();
+    DELAY(timeout * 1000); 
+    broker->end();
+    std::cout << std::endl;
+    unsigned start = passive_subscriber.get_start_time() ;
+    unsigned finish = passive_subscriber.get_finish_time() ;
+    std::cout << "Elapsed time ms: " << finish - start << std::endl;
+    std::cout << "Max queue length = " << broker->get_max_queue() << std::endl;
+    delete broker;
+    return;
+}
+
+void test_copy() {
+    std::string next;
+    Queue<std::string>* q = new CirQueue<std::string>(QUEUE_SIZE);
+    Logger<std::string>* l = new Logger<std::string>();
+    for(int r=0; r < repeat; r++) {
+        for(int n = 0; n < BATCH_SIZE; n++) {
+            next = std::to_string(n);
+            q->push_tail(next);
+        }
+        for(int n = 0; n < BATCH_SIZE; n++) {
+            bool result = q->pop_head(next);
+            if(std::stoi(next) != n) std::cout << '!';
+            l->consume(next);
+        }
+        l->flush();
+    }
+    delete l;
+    delete q;
+}
+
+void test_alloc() {
+    CirQueue<std::string>* q = new TestQueue<std::string>(512);
+    Logger<std::string>* l = new Logger<std::string>();
+
+    std::string* next;
+    for(int r=0; r < repeat; r++) {
+        for (int i = 0; i < BATCH_SIZE; i++) {
+            next = q->allocate();
+            if (next) {
+                *next = std::to_string(i);
+                q->push_tail();
+            }
+        }
+        for (int i = 0; i < BATCH_SIZE; i++) {
+            if(q->pop_head(*next)) {
+                l->consume(*next);
+            }
+        }
+        l->flush();
+    }
+    delete l;
+    delete q;
+}
+
+void test_raw()
+{
+    TestQueue<TimerEvent>* q = new TestQueue<TimerEvent>(QUEUE_SIZE);
+    TimerEvent* next;
+    volatile TimerEvent* barrier = nullptr;
+
+    for(int r=0; r < repeat; r++) {
+        for(int n = 0; n < BATCH_SIZE; n++) {
+            next = q->allocate();
+            q->push_tail();
+        }
+        for(int n = 0; n < BATCH_SIZE; n++) {
+            bool result = q->pop_head(*next);
+            barrier = next;
+        }
+    }
+    delete q;
+}
+
+void setup() {
+#ifdef ARDUINO
+    Serial.begin(UART_RATE);
+#endif
+    DELAY(2000);
+    std::cout << "Queue/Events test" << std::endl;
+
+    UNITY_BEGIN();
+    std::cout << "Timer events test for " << timeout << " seconds" << std::endl;
+    RUN_TEST(test_timer_events);
+    auto start = std::chrono::steady_clock::now();
+    RUN_TEST(test_copy);
+    auto end = std::chrono::steady_clock::now();
+    auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    start = std::chrono::steady_clock::now();
+    std::cout << "Copy test:" << diff.count() << std::endl;
+    start = std::chrono::steady_clock::now();
+    RUN_TEST(test_alloc);
+    end = std::chrono::steady_clock::now();
+    diff = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cout << "Inplace test:" << diff.count() << std::endl;
+    start = std::chrono::steady_clock::now();
+    RUN_TEST(test_raw);
+    end = std::chrono::steady_clock::now();
+    diff = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    std::cout << "Raw test:" << diff.count() << std::endl;
+    
+    UNITY_END();
+}
+
+void loop() {}
+
+#ifndef ARDUINO
+int main() {
+    setup();
+    return 0;
+} 
+#endif
