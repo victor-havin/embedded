@@ -30,17 +30,15 @@ public:
     };
 
 public:
-    Queue() : queue_length(0) {} // Explicit zero-initialization for ESP32
+    Queue() {} // Explicit zero-initialization for ESP32
     virtual ~Queue() {}
     virtual bool push_tail() = 0; 
     virtual bool push_tail(T& item) = 0;
     virtual bool pop_head(T& item) = 0;
-    size_t get_length() const {return queue_length.load(std::memory_order_relaxed);}
-    void increment_length() {queue_length.fetch_add(1, std::memory_order_relaxed);}
-    void decrement_length() {queue_length.fetch_sub(1, std::memory_order_relaxed);}
-    virtual bool is_empty() {return queue_length.load(std::memory_order_relaxed) == 0;}
+    virtual bool peek_head(T& item) = 0;
+    size_t get_length() const;
+   virtual bool is_empty() {return get_length() == 0;}
 protected:
-    std::atomic<size_t> queue_length;
 };
 
 //==============================================================================
@@ -53,16 +51,31 @@ template <typename T> class CirQueue : public Queue <T>
 public:
     class CirPointer : public Queue<T>::Pointer
     {
-        friend CirQueue;
+        friend class CirQueue; // Fixed: Explicit class friendship
     public:
         CirPointer(Queue<T>* queue)
-            : Queue<T>::Pointer(queue), index(0) {};
+            : Queue<T>::Pointer(queue) { index.store(0, std::memory_order_relaxed); }
         
-        virtual CirPointer& operator++();
-        virtual CirPointer operator++(int);
-        virtual T& operator*();
-        virtual T* operator[](int i);
-        size_t index;
+        // Custom copy constructor and assignment operator to cleanly support copying atomic indexes
+        CirPointer(const CirPointer& other) : Queue<T>::Pointer(other.queue) {
+            index.store(other.index.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        }
+        CirPointer& operator=(const CirPointer& other) {
+            if (this != &other) {
+                this->queue = other.queue;
+                index.store(other.index.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            }
+            return *this;
+        }
+
+        virtual ~CirPointer() override {}
+        CirPointer& operator++();
+        CirPointer operator++(int);
+        T& operator*();
+        T* operator[](int i);
+        
+        // Changed to atomic to prevent multi-core caching/reordering bugs
+        std::atomic<size_t> index;
 
     protected:
         CirQueue<T>* q() {return static_cast<CirQueue<T>*>(this->queue); }
@@ -74,10 +87,31 @@ public:
 public:
     CirQueue(size_t queue_size);
     virtual ~CirQueue() override;
-    bool push_tail() override;
-    bool push_tail(T& item) override;
-    bool pop_head(T& item) override;
-    bool is_full() {return this->queue_length.load(std::memory_order_relaxed) == this->queue_size;}
+    virtual bool push_tail() override;
+    virtual bool push_tail(T& item) override;
+    virtual bool pop_head(T& item) override;
+    virtual bool peek_head(T& item) override;
+    
+    // Lockless overrides that bypass queue_length to completely eliminate L1 cache fighting
+    size_t get_length() const {
+        size_t current_head = head_ptr.index.load(std::memory_order_acquire);
+        size_t current_tail = tail_ptr.index.load(std::memory_order_acquire);
+        if (current_tail >= current_head) {
+            return current_tail - current_head;
+        } else {
+            return (queue_size - current_head) + current_tail;
+        }
+    }
+    
+    bool is_empty() override {
+        return head_ptr.index.load(std::memory_order_relaxed) == tail_ptr.index.load(std::memory_order_acquire);
+    }
+    
+    bool is_full() {
+        size_t curr_tail = tail_ptr.index.load(std::memory_order_relaxed);
+        size_t next_tail = (curr_tail + 1 == queue_size) ? 0 : curr_tail + 1;
+        return next_tail == head_ptr.index.load(std::memory_order_acquire);
+    }
 
     T* allocate();
 
@@ -126,7 +160,10 @@ CirQueue<T>::~CirQueue() {
 /// @return pointer to 
 template <typename T>
 typename CirQueue<T>::CirPointer& CirQueue<T>::CirPointer::operator++() {
-    index = (index + 1 == q()->queue_size) ? 0 : index + 1;
+    size_t curr_idx = index.load(std::memory_order_relaxed);
+    size_t next_idx = (curr_idx + 1 == q()->queue_size) ? 0 : curr_idx + 1;
+    // Release fence ensures the consumer core sees payload modifications before index shifts
+    index.store(next_idx, std::memory_order_release);
     return *this;
 }
 
@@ -135,7 +172,7 @@ typename CirQueue<T>::CirPointer& CirQueue<T>::CirPointer::operator++() {
 /// @tparam T
 template <typename T>
 typename CirQueue<T>::CirPointer CirQueue<T>::CirPointer::operator++(int) {
-    CirPointer ret = *this; // Compiles cleanly! Copying the pointer does not violate atomic constraints
+    CirPointer ret = *this; 
     ++(*this);
     return ret;
 }
@@ -144,7 +181,7 @@ typename CirQueue<T>::CirPointer CirQueue<T>::CirPointer::operator++(int) {
 /// @brief queue pointer dereference operator
 template <typename T> 
 T& CirQueue<T>::CirPointer::operator*() {
-    return q()->storage[index];
+    return q()->storage[index.load(std::memory_order_relaxed)];
 }
 
 //------------------------------------------------------------------------------
@@ -161,7 +198,6 @@ bool CirQueue<T>::push_tail() {
     if(is_full()) {
         return false;
     } else {
-        this->increment_length();
         tail_ptr++;
         return true;
     }
@@ -174,9 +210,8 @@ bool CirQueue<T>::push_tail(T& item) {
     if(is_full()) {
         return false;
     } else {
-        *tail_ptr = item; // Replaces your custom assignment interface cleanly
+        *tail_ptr = item; // Copy item into queue
         tail_ptr++;
-        this->increment_length();
         return true;
     }
 }
@@ -189,7 +224,17 @@ bool CirQueue<T>::pop_head(T& item) {
     } else {
         item = *head_ptr;
         head_ptr++;
-        this->decrement_length();
+        return true;
+    }
+}
+
+//------------------------------------------------------------------------------
+template <typename T>
+bool CirQueue<T>::peek_head(T& item) {
+    if(this->is_empty()) { 
+        return false;
+    } else {
+        item = *head_ptr;
         return true;
     }
 }
@@ -200,8 +245,7 @@ T* CirQueue<T>::allocate() {
     if(is_full()) {
         return nullptr;
     } else {
-        // Preserves your 30% faster in-place initialization strategy
-        return &(this->storage[tail_ptr.index]);
+        return &(this->storage[tail_ptr.index.load(std::memory_order_relaxed)]);
     }
 }
 
