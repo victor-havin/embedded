@@ -10,7 +10,6 @@
 #include "esp_queue.h"
 #include "event_broker.h"
 
-class Component;
 //==============================================================================
 // class ESPEventBroker
 template <typename T, typename Q = ESPCirQueue<T>> 

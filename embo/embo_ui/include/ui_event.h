@@ -5,6 +5,7 @@
 #include <variant.h>
 
 class Variant;
+class Component;
 
 class UIEvent : public Event 
 {
