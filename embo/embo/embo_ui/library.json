@@ -1,0 +1,10 @@
+{
+    "name": "composer",
+    "version": "1.0.0",
+    "description": "UI Composer",
+    "authors": [
+        {
+            "name": "Victor"
+        }
+    ]
+}
