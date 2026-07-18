@@ -44,7 +44,7 @@ public:
     };
 
 protected:
-    //ESPEventBroker* broker;
+ 
 };
 
 //==============================================================================
@@ -68,6 +68,7 @@ void ESPEventBroker<T, Q>::Producer::begin() {
     auto cfg = esp_pthread_get_default_config();
     cfg.pin_to_core = 1; 
     cfg.thread_name = "BrokerProducer";
+    cfg.stack_size = 8192;
     cfg.prio = 1;
     esp_pthread_set_cfg(&cfg);
 

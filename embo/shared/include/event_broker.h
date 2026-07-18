@@ -164,16 +164,9 @@ public:
     {
         friend class RosterEntry;
     public:
-        Subscriber(EventBroker* broker = nullptr):broker(broker){}
+        Subscriber(EventBroker* broker = nullptr):broker(broker),active(true) {}
         void set_active(bool active_ = true){active = active_;}
         bool is_active() const {return active;}
-        /*
-        void set_callback(EventCallback callback) {this->callback = callback;}
-        virtual void receive(const T& event) {
-            if (callback) callback(event);
-        }
-        EventCallback callback;
-        */
         bool subscribe(const Subscription& subscription) {
             if(broker) {
                 return broker->subscribe(subscription);
@@ -189,18 +182,21 @@ public:
     class Subscription {
     public:
         Subscription(unsigned event_id, Subscriber* subscriber, unsigned flags,  EventCallback callback) : 
-        event_id(event_id), subscriber(subscriber), flags(flags), callback(callback){}
+        event_id(event_id), subscriber(subscriber), flags(flags), callback(callback), aux(nullptr) {}
         unsigned get_event_id() const {return event_id;}
         Subscriber* get_subscriber() const {return subscriber;}
         void set_subscriber(Subscriber* subscriber) {this->subscriber = subscriber;}
         EventCallback get_callback() const {return callback;}
         unsigned get_flags() const {return flags;}
+        void* get_aux() const {return aux;}
+        void set_aux(void* aux) {this->aux = aux;}
 
     private:
         unsigned event_id;
         Subscriber* subscriber;
         EventCallback callback;
         unsigned flags;
+        void* aux;
     };
 
 protected:
