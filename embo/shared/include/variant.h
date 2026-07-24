@@ -3,7 +3,7 @@
 class Variant
 {
 public:
-    enum Type {
+    enum Type : byte {
         NOTHING,
         POINT,
         SIZE,
@@ -14,14 +14,16 @@ public:
 
     struct Point 
     {
-        int x;
-        int y;
+        int16_t x;
+        int16_t y;
+        Point(int x = 0, int y = 0) : x(static_cast<int16_t>(x)), y(static_cast<int16_t>(y)) {}
     };
 
     struct Size
     {
-        int w;
-        int h;
+        int16_t w;
+        int16_t h;
+        Size(int w = 0, int h = 0) : w(static_cast<int16_t>(w)), h(static_cast<int16_t>(h)) {}
     };
 
     struct Position
@@ -32,9 +34,8 @@ public:
 
     struct Character
     {
-        bool special;
-        int code;
-        char ch;
+        byte flags;
+        char code;
     };
 
     union Data {
@@ -42,6 +43,7 @@ public:
         Size size;
         Position position;
         Character character;
+        Data() : position() {}
     };
 
     Variant():variant_type(NOTHING) {}
@@ -52,7 +54,6 @@ public:
         data.character = character;
     }
     Point get_point() const {
-        //assert(variant_type == POINT); 
         return data.point;
     }
     Size get_size() const {
@@ -62,7 +63,6 @@ public:
         return data.position;
     }
     Character get_character() const {
-        //assert(variant_type == CHARACTER);
         return data.character;
     }
     // ToDo: add more constructors and getters

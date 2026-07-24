@@ -25,14 +25,16 @@ public:
         new ESPEventBroker<T,Q>::Producer(this), 
         new ESPEventBroker<T,Q>::Consumer(this)){}
     virtual ~ESPEventBroker(){}
-    virtual void begin()override;
-
+    virtual void begin() override;
+ 
     class Producer : public EventBroker<T, Q>::Producer
     {
     public:
         Producer(ESPEventBroker* broker) : 
             EventBroker<T,Q>::Producer(broker) {}
         virtual void begin() override;
+    protected:
+        virtual void loop() override;
     };
     class Consumer : public EventBroker<T, Q>::Consumer
     {
@@ -76,6 +78,31 @@ void ESPEventBroker<T, Q>::Producer::begin() {
 }
 
 //------------------------------------------------------------------------------
+/// @brief Producer thread loop
+/// @details Consumer thread is pinned to core 1 and has the name "BrokerProducer".
+template <typename T, typename Q> 
+void ESPEventBroker<T, Q>::Producer::loop() {
+    ESPEventBroker* broker = (ESPEventBroker*)(this->broker);
+    if(!broker) {
+        return;
+    }
+    TaskHandle_t h = xTaskGetCurrentTaskHandle();
+    memcpy(&this->id, &h, sizeof(pthread_t));
+    while(!broker->done.load(std::memory_order_relaxed)) {
+        broker->send();
+        std::this_thread::yield();
+    }
+    // This will be the last event in the queue
+    T* event_kill = broker->allocate();
+    if(event_kill) {
+        event_kill->id = Event::KILL;
+        broker->push_tail();
+    }
+
+}
+
+
+//------------------------------------------------------------------------------
 /// @brief consumer thread loop
 /// @details Consumer thread is pinned to core 0 and has the name "BrokerConsumer".
 template <typename T, typename Q> 
@@ -92,6 +119,8 @@ void ESPEventBroker<T, Q>::Consumer::begin() {
 template <typename T, typename Q> 
 void ESPEventBroker<T, Q>::Consumer::loop() {
     bool done = false;
+    TaskHandle_t h = xTaskGetCurrentTaskHandle();
+    memcpy(&this->id, &h, sizeof(pthread_t));
     if(!this->broker) {
         return;
     }

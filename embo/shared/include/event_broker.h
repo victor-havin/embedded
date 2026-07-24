@@ -6,7 +6,7 @@
 #pragma once
 #include <Arduino.h> // ToDo: delete after debugging
 //- stdlib ---------------------------------------------------------------------
-#include <thread>
+#include <threading.h>
 #include <list>
 #include <vector>
 #include <tuple>
@@ -75,6 +75,12 @@ public:
         }
     }
 
+    pthread_t get_producer_id() const {
+        return producer->get_id();
+    }
+    pthread_t get_consumer_id() const {
+        return consumer->get_id();
+    }
     //------------------------------------------------------------------------------
     /// @brief roster entry for each event type, containing the list of 
     /// subscribers and the event id (internal use only)
@@ -132,11 +138,15 @@ public:
         Producer(EventBroker* broker):broker(broker) {}
         virtual void begin();
         virtual void end();
+
+        std::thread& get_thread() {return producer_thread;}
+        pthread_t get_id() const {return id;}
     
     protected:
         virtual void loop();
         EventBroker* broker;
         std::thread producer_thread;
+        pthread_t id;
     };
 
     //------------------------------------------------------------------------------
@@ -149,10 +159,14 @@ public:
         virtual void begin();
         virtual void end();
 
+        std::thread& get_thread() {return consumer_thread;}
+        pthread_t get_id() const {return id;}
+
     protected:
         virtual void loop();
         EventBroker* broker;
         std::thread consumer_thread;
+        pthread_t id;
     };
 
   
@@ -318,6 +332,8 @@ void EventBroker<T, Q>::Producer::loop() {
     if(!broker) {
         return;
     }
+    std::thread::id tid = std::this_thread::get_id();
+    memcpy(&id, &tid, sizeof(id));
     while(!broker->done.load(std::memory_order_relaxed)) {
         broker->send();
         std::this_thread::yield();
@@ -366,6 +382,8 @@ void EventBroker<T, Q>::Consumer::end() {
 template <typename T, typename Q> 
 void EventBroker<T, Q>::Consumer::loop() {
     bool done = false;
+    std::thread::id tid = std::this_thread::get_id();
+    memcpy(&id, &tid, sizeof(id));
     while(!done) {
         if(!broker->is_empty()) {
             T event;

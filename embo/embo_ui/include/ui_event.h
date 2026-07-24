@@ -11,17 +11,23 @@ class UIEvent : public Event
 {
 public:
     enum UIEventID : uint16_t {
-        EVT_FIRST = Event::FIRST,
-        EVT_UPDATE,
-        EVT_TOUCH_DOWN,
-        EVT_TOUCH_UP,
-        EVT_TOUCH_DRAG,
-        EVT_PRESS,
-        EVT_RELEASE,
-        EVT_ENTER,
-        EVT_LEAVE,
-        EVT_INPUT,
-        EVT_LAST
+        EVT_FIRST = Event::FIRST,   // First past reserved for messge broker
+        EVT_INIT,                   // Init. Called once at start.
+        EVT_UPDATE,                 // Update. Caused by inavlidate()
+        EVT_FOCUS,                  // Component focused for input
+        EVT_TOUCH_DOWN,             // Panel touch down
+        EVT_TOUCH_UP,               // Panel touch up   
+        EVT_TOUCH_DRAG,             // Panel touch drag
+        EVT_PRESS,                  // Component pressed
+        EVT_RELEASE,                // Component released
+        EVT_ENTER,                  // Component entered
+        EVT_LEAVE,                  // Component left
+        EVT_INPUT,                  // Input generated
+        EVT_VISIBLE,                // Component visibility changed
+        EVT_TIMER,                  // Timer event
+        EVT_SLEEP,                  // Sleep
+        EVT_WAKE,                   // Wake up
+        EVT_LAST                    // Guard
     };
     UIEvent() : Event(EVT_FIRST), millis(::millis()) {};
     UIEvent(UIEventID id, Component* source = nullptr) : 

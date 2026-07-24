@@ -1,14 +1,20 @@
 // shared_lib/include/embo_mutex.h
 #pragma once
-#include <atomic>
+#ifdef ESP_PLATFORM
 #include <FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/event_groups.h>
-
+#include <freertos/task.h>
+#include <esp_pthread.h>
+#endif //ESP_PLATFORM
+#include <atomic>
+#include <thread>
 #include <pthread.h>
+#include <cstring>
 
 namespace embo {
 
+#ifdef ESP_PLATFORM
 /**
  * @brief Drop-in replacement for std::mutex.
  * Optimized for hardware core registers on ESP32-S3.
@@ -84,6 +90,13 @@ private:
     T& lockable;
 };
 
+#else
+using mutex = std::mutex;
+using recursive_mutex = std::recursive_mutex;
+using lock_guard<typename T> = std::lock_guard<typename T>
+#endif
+
+#ifdef ESP_PLATFORM
 /**
  * @brief Zero-heap Binary Semaphore signaling utility.
  * Safe for thread-to-thread and ISR-to-thread communication.
@@ -271,5 +284,5 @@ public:
     }
 
 };
-
+#endif //ESP_PLATFORM
 } // namespace embo

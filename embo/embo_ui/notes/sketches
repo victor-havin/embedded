@@ -1,0 +1,263 @@
+static const Transition StateTable[4][8] = {
+    // -------------------------------------------------------------------------
+    // CURRENT STATE: Idle (0)
+    // -------------------------------------------------------------------------
+    {
+        { CompState::Idle,    nullptr },               // 000: Up->Up, Out
+        { CompState::Hovered, &UIComposer::do_enter }, // 001: Up->Up, In (Hover)
+        { CompState::Idle,    nullptr },               // 010: Up->Down, Out
+        { CompState::Pressed, &UIComposer::do_press }, // 011: Up->Down, In (Press!)
+        { CompState::Idle,    nullptr },               // 100: Down->Up, Out
+        { CompState::Idle,    nullptr },               // 101: Down->Up, In
+        { CompState::Idle,    nullptr },               // 110: Down->Down, Out
+        { CompState::Idle,    nullptr }                // 111: Down->Down, In
+    },
+    // -------------------------------------------------------------------------
+    // CURRENT STATE: Hovered (1)
+    // -------------------------------------------------------------------------
+    {
+        { CompState::Idle,    &UIComposer::do_leave }, // 000: Up->Up, Out
+        { CompState::Hovered, nullptr },               // 001: Up->Up, In
+        { CompState::Idle,    &UIComposer::do_leave }, // 010: Up->Down, Out
+        { CompState::Pressed, &UIComposer::do_press }, // 011: Up->Down, In
+        { CompState::Idle,    &UIComposer::do_leave }, // 100: Down->Up, Out
+        { CompState::Idle,    &UIComposer::do_leave }, // 101: Down->Up, In
+        { CompState::Idle,    &UIComposer::do_leave }, // 110: Down->Down, Out
+        { CompState::Hovered, nullptr }                // 111: Down->Down, In
+    },
+    // -------------------------------------------------------------------------
+    // CURRENT STATE: Pressed (2)
+    // -------------------------------------------------------------------------
+    {
+        { CompState::Idle,    &UIComposer::do_leave },   // 000: Up->Up, Out
+        { CompState::Idle,    &UIComposer::do_release }, // 001: Up->Up, In
+        { CompState::Idle,    &UIComposer::do_leave },   // 010: Up->Down, Out
+        { CompState::Idle,    &UIComposer::do_release }, // 011: Up->Down, In
+        { CompState::Idle,    &UIComposer::do_leave },   // 100: Down->Up, Out
+        { CompState::Idle,    &UIComposer::do_release }, // 101: Down->Up, In (Click Release!)
+        { CompState::SlidOut, &UIComposer::do_leave },   // 110: Down->Down, Out (Slide-out)
+        { CompState::Pressed, nullptr }                  // 111: Down->Down, In
+    },
+    // -------------------------------------------------------------------------
+    // CURRENT STATE: SlidOut (3)
+    // -------------------------------------------------------------------------
+    {
+        { CompState::Idle,    nullptr },               // 000: Up->Up, Out
+        { CompState::Idle,    nullptr },               // 001: Up->Up, In
+        { CompState::Idle,    nullptr },               // 010: Up->Down, Out
+        { CompState::Idle,    nullptr },               // 011: Up->Down, In
+        { CompState::Idle,    nullptr },               // 100: Down->Up, Out
+        { CompState::Idle,    nullptr },               // 101: Down->Up, In (Canceled Release)
+        { CompState::SlidOut, nullptr },               // 110: Down->Down, Out
+        { CompState::Pressed, &UIComposer::do_enter }  // 111: Down->Down, In (Slide-back-in)
+    }
+};
+
+// Add to UIEvent enum / class definition
+enum Id : uint16_t {
+    // System Inputs
+    EVT_TOUCH_DOWN,
+    EVT_TOUCH_UP,
+    EVT_TOUCH_DRAG,
+    // Component Translated Outputs
+    EVT_ENTER,
+    EVT_LEAVE,
+    EVT_PRESS,
+    EVT_RELEASE
+};
+
+// State cells for individual components
+enum class CompState : uint8_t {
+    Idle = 0,
+    Hovered = 1,
+    Pressed = 2,
+    SlidOut = 3
+};
+
+// Transition structure definitions
+using StateAction = void (UIComposer::*)(Component* comp, Variant::Point pt);
+struct Transition {
+    CompState next_state;
+    StateAction action;
+};
+
+// Inside Component.h
+private:
+    uint8_t touch_state = 0; // Maps directly to CompState::Idle
+public:
+    CompState get_touch_state() const { return static_cast<CompState>(touch_state); }
+    void set_touch_state(CompState s) { touch_state = static_cast<uint8_t>(s); }
+
+
+Variant::Point Component::get_absolute_position() const {
+    Variant::Point abs_p = position.p; // Start with local relative coordinates
+    Component* parent_ptr = parent;
+
+    // Walk up the family tree until we hit a top-level container or the root
+    while (parent_ptr != nullptr) {
+        abs_p.x += parent_ptr->position.p.x;
+        abs_p.y += parent_ptr->position.p.y;
+        parent_ptr = parent_ptr->parent;
+    }
+    return abs_p;
+}
+
+bool Component::is_point_inside_absolute(Variant::Point pt) const {
+    Variant::Point abs_p = get_absolute_position();
+    // Direct, on-the-fly four-integer boundary math check
+    return (pt.x >= abs_p.x && 
+            pt.x <  abs_p.x + position.s.w &&
+            pt.y >= abs_p.y && 
+            pt.y <  abs_p.y + position.s.h);
+}
+
+// Inside Component class definition
+public:
+    Variant::Point get_absolute_position() const {
+        Variant::Point abs_p = position.p; // Start with local relative coordinates
+        Component* parent_ptr = parent;
+
+        // Walk up the hierarchy to accumulate parent relative offsets
+        while (parent_ptr != nullptr) {
+            abs_p.x += parent_ptr->position.p.x;
+            abs_p.y += parent_ptr->position.p.y;
+            parent_ptr = parent_ptr->parent;
+        }
+        return abs_p;
+    }
+
+    bool is_point_inside_absolute(Variant::Point pt) const {
+        if (!is_visible()) return false;
+        Variant::Point abs_p = get_absolute_position();
+        
+        // Dynamic four-integer boundary math check (0 bytes permanent RAM overhead)
+        return (pt.x >= abs_p.x && 
+                pt.x <  abs_p.x + position.s.w &&
+                pt.y >= abs_p.y && 
+                pt.y <  abs_p.y + position.s.h);
+    }
+
+    void gather_all_descendants(std::vector<Component*>& list) {
+        for (Component* child : children) {
+            list.push_back(child);
+            child->gather_all_descendants(list); // Post-order recursive plunge
+        }
+    }
+
+    void UIComposer::render() {
+    // 1. Flatten layout tree into a linear vector array
+    flat_components.clear();
+    for (Zone* zone : zones) {
+        if (zone) {
+            flat_components.push_back(zone); // Add container base
+            zone->gather_all_descendants(flat_components); // Add child tree branches
+        }
+    }
+
+    // 2. [Your existing offscreen canvas finalization & base drawing logic]
+    // ...
+}
+
+void UIComposer::receive(const Subscription& subscription, UIEvent& event) {
+    max_queue_len = std::max(max_queue_len, get_length());
+
+    switch(event.id) {
+        // --- PHASE 1: Low-Level System Touches (Process State Matrix) ---
+        case UIEvent::EVT_TOUCH_DOWN:
+        case UIEvent::EVT_TOUCH_UP:
+        case UIEvent::EVT_TOUCH_DRAG:
+        {
+            Variant::Point point = event.get_variant().get_point();
+            
+            // Map instantaneous hardware state flags
+            bool is_down = (event.id == UIEvent::EVT_TOUCH_DOWN || event.id == UIEvent::EVT_TOUCH_DRAG);
+            bool was_down = last_touch_state_was_down; // Persistent UIComposer member boolean flag
+
+            // Single linear pass over your pre-flattened component list.
+            // NO dynamic vector allocations, NO heap churning, NO memory fragmentation.
+            for (Component* comp : flat_components) {
+                if (!comp) continue;
+
+                // 1. Evaluate geometry directly on the fly via parent traversal
+                bool is_inside = comp->is_point_inside_absolute(point);
+
+                // 2. Pack parameters into the ultra-fast 3-bit matrix lookup index token
+                // Bit 2: Was Finger Down | Bit 1: Is Finger Down | Bit 0: Is Point Inside Bounding Box
+                uint8_t token = ((was_down ? 1 : 0) << 2) | ((is_down ? 1 : 0) << 1) | (is_inside ? 1 : 0);
+
+                // 3. Perform the O(1) table transition lookup
+                CompState current_state = comp->get_touch_state();
+                Transition t = StateTable[static_cast<uint8_t>(current_state)][token];
+
+                // 4. Fire the component's translated output action callback if one is mapped
+                if (t.action != nullptr) {
+                    (this->*(t.action))(comp, point);
+                }
+
+                // 5. Apply the next deterministic state boundary cell
+                comp->set_touch_state(t.next_state);
+            }
+
+            // Lock physical frame tracking history state for next polling step
+            last_touch_state_was_down = is_down;
+            break;
+        }
+
+        // --- PHASE 2: Translated Component Outputs (Deliver to Subscribers) ---
+        case UIEvent::EVT_ENTER:
+        case UIEvent::EVT_LEAVE:
+        case UIEvent::EVT_PRESS:
+        case UIEvent::EVT_RELEASE:
+        {
+            auto callback = subscription.get_callback();
+            if (subscription.get_flags() & UIComposer::SUB_SELF) {
+                if (subscription.get_subscriber() == event.get_source()) {
+                    callback(subscription, event);
+                }
+            } else {
+                callback(subscription, event);
+            }
+            break;
+        }
+    }
+}
+
+void UIComposer::do_press(Component* comp, Variant::Point pt) {
+    UIEvent ev(UIEvent::EVT_PRESS, pt);
+    ev.set_source(comp);
+    this->dispatch_translated_event(ev); 
+}
+
+void UIComposer::do_release(Component* comp, Variant::Point pt) {
+    UIEvent ev(UIEvent::EVT_RELEASE, pt);
+    ev.set_source(comp);
+    this->dispatch_translated_event(ev);
+}
+
+void UIComposer::do_enter(Component* comp, Variant::Point pt) {
+    UIEvent ev(UIEvent::EVT_ENTER, pt);
+    ev.set_source(comp);
+    this->dispatch_translated_event(ev);
+}
+
+void UIComposer::do_leave(Component* comp, Variant::Point pt) {
+    UIEvent ev(UIEvent::EVT_LEAVE, pt);
+    ev.set_source(comp);
+    this->dispatch_translated_event(ev);
+}
+
+void UIComposer::dispatch_translated_event(UIEvent& ev) {
+    // Deliver the newly created lifecycle event directly to matching subscriptions
+    for (const auto& sub : subscriptions[ev.id]) {
+        this->receive(sub, ev); 
+    }
+}
+
+void setup_hardware_timer() {
+    // Configure hardware timer 0 to fire every 1000 microseconds (1ms)
+    // ESP32-specific syntax shown here; adapts easily to other chips
+    hw_timer_t* timer = timerBegin(0, 80, true); // 80MHz prescaler -> 1 tick = 1 microsecond
+    timerAttachInterrupt(timer, &on_1ms_timer_tick, true);
+    timerAlarmWrite(timer, 1000, true); // 1000 microseconds = 1ms, auto-reload = true
+    timerAlarmEnable(timer);
+}

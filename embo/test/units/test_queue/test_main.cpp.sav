@@ -1,26 +1,16 @@
-#ifdef ARDUINO
 #include <Arduino.h>
 #include <unity.h>
-#else
-#define UNITY_BEGIN()
-#define UNITY_END()
-#define RUN_TEST(x) x();
-#endif
 #include <iostream>
 #include <string>
 #include <chrono>
 #ifdef ARDUINO
-#include "esp_event_broker.h"
+#include <esp_event_broker.h>
 #define TestQueue ESPCirQueue
 #define TestBroker ESPEventBroker 
-#define DELAY(x) vTaskDelay(pdMS_TO_TICKS(x));
-#define TIME_MILLIS() millis()
 #else
-#include "event_broker.h"
+#include <event_broker.h>
 #define TestQueue CirQueue
 #define TestBroker EventBroker
-#define DELAY(x) std::this_thread::sleep_for(std::chrono::milliseconds(x));
-#define TIME_MILLIS() std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()
 #endif
 
 #define UART_RATE 115200
@@ -55,6 +45,7 @@ private:
 
 //------------------------------------------------------------------------------
 // Timer Event
+
 //------------------------------------------------------------------------------
 // Timer event class definition
 class TimerEvent : public Event
@@ -68,7 +59,7 @@ public:
     TimerEvent(unsigned id = 0):Event(id){}
 
     void set_timestamp() {
-        this->timestamp = TIME_MILLIS();
+        this->timestamp = millis();
     }
 
     unsigned long get_timestamp() const {return timestamp;}
@@ -77,21 +68,47 @@ private:
     unsigned long timestamp;
 };
 
+//------------------------------------------------------------------------------
+class ActiveSubscriber : public TestBroker<TimerEvent>::Subscriber
+{
+public:
+    virtual bool receive(const TimerEvent& event){
+        //std::cout << "." << std::flush;
+        return true;
+    }
+};
 
-using Broker = TestBroker<TimerEvent>;
-using Subscription = TestBroker<TimerEvent>::Subscription;
-using Subscriber = TestBroker<TimerEvent>::Subscriber;
+//------------------------------------------------------------------------------
+class PassiveSubscriber : public TestBroker<TimerEvent>::Subscriber
+{
+public:
 
-class TimerEventBroker;
-class ActiveSubscriber;
-class CountingSubscriber;
+virtual bool receive(const TimerEvent& event){
+        if(event.get_id() == TimerEvent::MILLISECONDS){
+            if(first_event) {
+                first_event = false;
+                first_ts = event.get_timestamp();
+            } else {
+                last_ts = event.get_timestamp();
+            }
+        }
+        return true;
+    }
+    unsigned long get_start_time() const {return first_ts;}
+    unsigned long get_finish_time() const {return last_ts;}
+
+private:
+    bool first_event = true;
+    unsigned long first_ts;
+    unsigned long last_ts;
+};
 
 //------------------------------------------------------------------------------
 // Timer event broker
-class TimerEventBroker: public Broker
+class TimerEventBroker: public TestBroker<TimerEvent> 
 {
 public:
-    TimerEventBroker():Broker(128, TimerEvent::LAST){}
+    TimerEventBroker():ESPEventBroker<TimerEvent>(128, TimerEvent::LAST){}
     ~TimerEventBroker() {}
     size_t get_max_queue() const {return max_queue;}
     virtual void begin() override;
@@ -109,14 +126,14 @@ void TimerEventBroker::send()
 {
     // If the queue is full, yield for a longer window to let the consumer process stdout dots
     if (is_full()) {
-        DELAY(10)
+        vTaskDelay(pdMS_TO_TICKS(10)); 
         return;
     }
 
     static unsigned count = 0;
     static unsigned timestamp = 0;
     
-    DELAY(1);
+    vTaskDelay(pdMS_TO_TICKS(1)); 
     
     timestamp++;
     count++;
@@ -143,92 +160,23 @@ void TimerEventBroker::send()
 }
 
 //------------------------------------------------------------------------------
-class ActiveSubscriber : public Subscriber
-{
-public:
-    ActiveSubscriber(TimerEventBroker* broker) : 
-        Subscriber(static_cast<Broker*>(broker)) {}
-    virtual bool receive(const TimerEvent& event){
-        //std::cout << "." << std::flush;
-        return true;
-    }
-
-    void begin() {
-        subscribe(Subscription(
-            TimerEvent::SECONDS, 
-            this, 
-            0, 
-            [this](const Subscription& s, const TimerEvent& e){
-                receive(e);
-            }
-        ));
-    }
-};
-
-//------------------------------------------------------------------------------
-class CountingSubscriber : public Subscriber
-{
-public:
-
-    CountingSubscriber(TimerEventBroker* broker) :
-        Subscriber(static_cast<Broker*>(broker)) {}
-
-    virtual bool receive(const TimerEvent& event){
-        if(event.get_id() == TimerEvent::MILLISECONDS){
-            if(first_event) {
-                first_event = false;
-                first_ts = event.get_timestamp();
-            } else {
-                last_ts = event.get_timestamp();
-            }
-        }
-        return true;
-    }
-    void begin() {
-        broker->subscribe(Subscription(
-            TimerEvent::MILLISECONDS, 
-            this,
-            0,
-            [this](const Subscription& s, const TimerEvent& e){
-                receive(e);
-            }
-        ));
-        broker->subscribe(Subscription(
-            TimerEvent::SECONDS, 
-            this,
-            0,
-            [this](const Subscription& s, const TimerEvent& e){
-                seconds++;
-            }
-        ));
-    }
-    unsigned long get_start_time() const {return first_ts;}
-    unsigned long get_finish_time() const {return last_ts;}
-
-private:
-    bool first_event = true;
-    unsigned long first_ts;
-    unsigned long last_ts;
-    unsigned long seconds = 0;
-};
-
-//------------------------------------------------------------------------------
 // Timer Event Test
 void test_timer_events()
 {
     TimerEventBroker* broker = new TimerEventBroker();
-    ActiveSubscriber active_subscriber(broker);
-    CountingSubscriber counting_subscriber(broker);
+    ActiveSubscriber active_subscriber;
+    PassiveSubscriber passive_subscriber;
     broker->publish(TimerEvent::SECONDS);
     broker->publish(TimerEvent::MILLISECONDS);
-    active_subscriber.begin();
-    counting_subscriber.begin();
+    broker->subscribe(TimerEvent::SECONDS, &active_subscriber);
+    broker->subscribe(TimerEvent::SECONDS, &passive_subscriber);
+    broker->subscribe(TimerEvent::MILLISECONDS, &passive_subscriber);
     broker->begin();
-    DELAY(timeout * 1000); 
+    vTaskDelay(pdMS_TO_TICKS(timeout * 1000)); 
     broker->end();
     std::cout << std::endl;
-    unsigned start = counting_subscriber.get_start_time() ;
-    unsigned finish = counting_subscriber.get_finish_time() ;
+    unsigned start = passive_subscriber.get_start_time() ;
+    unsigned finish = passive_subscriber.get_finish_time() ;
     std::cout << "Elapsed time ms: " << finish - start << std::endl;
     std::cout << "Max queue length = " << broker->get_max_queue() << std::endl;
     delete broker;
@@ -281,7 +229,7 @@ void test_alloc() {
 
 void test_raw()
 {
-    TestQueue<TimerEvent>* q = new TestQueue<TimerEvent>(QUEUE_SIZE);
+    ESPCirQueue<TimerEvent>* q = new TestQueue<TimerEvent>(QUEUE_SIZE);
     TimerEvent* next;
     volatile TimerEvent* barrier = nullptr;
 
@@ -299,29 +247,28 @@ void test_raw()
 }
 
 void setup() {
-#ifdef ARDUINO
     Serial.begin(UART_RATE);
-#endif
-    DELAY(2000);
-    std::cout << "Queue/Events test" << std::endl;
+    delay(2000);
+    Serial.println("Queue/Events test");
 
     UNITY_BEGIN();
+    using namespace std::chrono;
     std::cout << "Timer events test for " << timeout << " seconds" << std::endl;
     RUN_TEST(test_timer_events);
-    auto start = std::chrono::steady_clock::now();
+    auto start = steady_clock::now();
     RUN_TEST(test_copy);
-    auto end = std::chrono::steady_clock::now();
+    auto end = steady_clock::now();
     auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    start = std::chrono::steady_clock::now();
+    start = steady_clock::now();
     std::cout << "Copy test:" << diff.count() << std::endl;
-    start = std::chrono::steady_clock::now();
+    start = steady_clock::now();
     RUN_TEST(test_alloc);
-    end = std::chrono::steady_clock::now();
+    end = steady_clock::now();
     diff = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     std::cout << "Inplace test:" << diff.count() << std::endl;
-    start = std::chrono::steady_clock::now();
+    start = steady_clock::now();
     RUN_TEST(test_raw);
-    end = std::chrono::steady_clock::now();
+    end = steady_clock::now();
     diff = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     std::cout << "Raw test:" << diff.count() << std::endl;
     
@@ -329,10 +276,3 @@ void setup() {
 }
 
 void loop() {}
-
-#ifndef ARDUINO
-int main() {
-    setup();
-    return 0;
-} 
-#endif
